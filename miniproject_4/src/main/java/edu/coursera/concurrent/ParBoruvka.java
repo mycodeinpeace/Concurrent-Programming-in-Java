@@ -6,6 +6,7 @@ import edu.coursera.concurrent.boruvka.Edge;
 import edu.coursera.concurrent.boruvka.Component;
 
 import java.util.Queue;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.List;
 import java.util.ArrayList;
 
@@ -28,7 +29,55 @@ public final class ParBoruvka extends AbstractBoruvka<ParBoruvka.ParComponent> {
     @Override
     public void computeBoruvka(final Queue<ParComponent> nodesLoaded,
             final SolutionToBoruvka<ParComponent> solution) {
-        throw new UnsupportedOperationException();
+    	    	
+    	ParComponent loopNode = null;
+
+        while((loopNode = nodesLoaded.poll()) != null) {
+            if (!loopNode.lock.tryLock()) {
+                continue;  // Optimistic Concurrency :: Current polled node is locked ,
+                // continue and poll another node
+            }
+
+            if (loopNode.isDead) {
+                loopNode.lock.unlock();
+                continue;
+            }
+
+            final Edge<ParComponent> edge = loopNode.getMinEdge();
+            if (edge == null) {
+                // No Edge  -- > all nodes merged to MST graph
+                solution.setSolution(loopNode);
+                break;
+            }
+
+            final ParComponent other = edge.getOther(loopNode);
+
+            // Try to get lock on Other node so no other thread is also Merging with this Node
+            if (!other.lock.tryLock()) {
+                loopNode.lock.unlock();
+                nodesLoaded.add(loopNode);
+                continue;
+            }
+            // Acquired lock on Other node with Min weight
+            if (other.isDead) {
+                // Other is already Processed
+                other.lock.unlock(); // Release Both Locks
+                loopNode.lock.unlock();
+                continue;
+            }
+
+            other.isDead = true;
+            // Other Node was not Dead --> Both Nodes of edge are locked --> Merge
+            loopNode.merge(other, edge.weight());
+
+            //Release Resources
+            loopNode.lock.unlock();
+            other.lock.unlock();
+
+            // Add merged Node to Queue
+            nodesLoaded.add(loopNode);
+        }
+         
     }
 
     /**
@@ -37,6 +86,7 @@ public final class ParBoruvka extends AbstractBoruvka<ParBoruvka.ParComponent> {
      * result of collapsing edges to form a component from multiple nodes.
      */
     public static final class ParComponent extends Component<ParComponent> {
+    	public final ReentrantLock lock = new ReentrantLock();
         /**
          *  A unique identifier for this component in the graph that contains
          *  it.
